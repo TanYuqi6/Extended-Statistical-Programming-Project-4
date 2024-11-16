@@ -1,0 +1,123 @@
+# Contribution:
+# Sai Li s2714242; Bingxin Li s2723681; Yuqi Tan s2703761
+# Contributions: Sai Li : Bingxin Li : Yuqi Tan = 15%:15%:70%
+# Yuqi Tan mainly explored implementation options, completed code writing, debuge and comment
+
+
+# Main function LMM
+lmm <- function(form, dat, ref = list()) {
+  # Main function: To estimate the parameter of the function linear mixed model
+  # Argument:
+    # form: model formula 
+    # dat: the dataframe containing all variables
+    # ref: a list of vectors specifying the random effects
+  # Returns:
+    # A list of estimated parameter of beta and theta based on the principle of likelihood
+  
+  #Using the function of LMMsetup to construct the list containing the parameters we need
+  setup <- LMMsetup(form, dat, ref)
+  #Set a initial value for estimating the parameter of theta
+  theta_init <- c(log(sd(setup$y)), rep(0, length(ref)))
+  #Use the function of optim() to optimize the theta correspond to the principle of likelihood
+  result <- optim(par=theta_init,fn=LMMprof,setup = setup,
+                  method = "BFGS",control = list(fnscale = 1))
+  # Get the parameter of beta and theta base on the principle of likelihood
+  beta <- attr(result$value,"beta")
+  theta <- result$par
+  return(list(beta = beta_hat,theta = theta_hat))
+}
+
+
+# Helper function LMMsetup()
+LMMsetup <- function(form, dat, ref) {
+  # LMMsetup function: To get the X,Z,Y and some other matrixes or vectors 
+  # Argument:
+    # form: model formula
+    # dat: the dataframe containing all variables
+    # ref: a list of vectors specifying the random effects
+  # Return:
+    # A list containing X,Y,Z and the number of rows or columns of matrix X or Z
+  
+  X <- model.matrix(form, data=dat)
+  Y <- model.response(model.frame(form, data = dat))
+  Z <- NULL
+  # To check whether each element in ref has only one varaible or several variables
+  for (t in ref){
+    if(length(t)==1){
+      # When there is only one element in one column of Z, set the form of random effect
+      Z_block = model.matrix(as.formula(paste("~",t,"-1")),data=dat)
+    }
+    else{
+      # Get the interaction effect variables when there are several variables in a vector
+      interaction = paste("~",paste(t,collapse = ':'),"-1")
+      Z_block = model.matrix(as.formula(interaction),data=dat)
+    }
+    # Construct the Z and before it based on the situation whether the Z is empty
+    Z <- if (is.null(Z)) Z_block else cbind(Z, Z_block)
+  }  
+  return(list(X=X,Z=Z,Y=Y,n = nrow(X),q=ncol(X),p=ncol(Z)))
+}
+
+
+# LMMprof helper function 
+LMMprof <- function(theta, setup)
+  {
+  # install the necessary package of Matrix  
+  library(Matrix) 
+  # LMMprof function: Get the value of likelihood about theta
+  # argument: 
+    # setup: the list gotten from the function of LMMsetup
+    # theta: the vector we need to construct the random effect variance
+  # Return: the value of likelihood about using estimated theta
+    
+  #Get the necessary matrix of X,Z or vector Y and some necessary value like n,p
+  X <- setup$X
+  Y <- setup$Y
+  Z <- setup$Z
+  n <- setup$n
+  p <- setup$p
+  q <- setup$q
+  
+  #Get the square of sigma
+  sigma_sq <- exp(2*theta[1]) 
+  # Get the diagonal matrix of random variable with covariance matrix
+  si_theta <- diag(exp(2*theta[-1]),nrow = p) 
+  
+  #Check whether Z is an empty matrix and process in different way based on different situations
+  if (length(Z) == 0){
+    
+    # This is the situation when Z is empty
+    #Construct the matrix W
+    W <- chol2inv(chol(diag(sigma_sq,n))) 
+    # Construct the vector of Y-X*beta_hat
+    Y_error <- Y-X%*%chol2inv(chol(t(X)%*%W%*%X))%*%(t(X)%*%W%*%Y)
+    # Construct the neg_likelihood
+    neg_lik <- 0.5*(t(Y_error)*chol2inv(chol(W))*Y_error+n*log(sigma_sq))
+    # Calculate the estimated beta and assign it to one property of neg_lik 
+    beta_hat <- chol2inv(chol(t(X)%*%W%*%X)%*%(t(X)%*%W%*%Y))
+    attr(neg_lik,"beta")<-beta_hat
+  }
+  else{
+    
+  # Doing QR decomposition and get the matrix of Q and R
+  qr_decomp <- qr(Z)
+  identity_matrix <- diag(1, nrow(Z))
+  Q <- qr.qy(qr_decomp, identity_matrix)
+  # Extract the first p row of the R part of the QR decomposition
+  R <- qr_decomp$qr[1:p, ] 
+  # Calculate the matrix of R*si_theta*R^T and W and so on
+  R_si_Rt <- R %*%si_theta%*%t(R)
+  V <- R_si_Rt+diag(sigma_sq,p)
+  W <- chol2inv(chol(Q%*%bdiag(V,diag(sigma_sq,n-p))%*%t(Q)))
+  # Calculate the vector of Y-X*beta_hat
+  Y_error <- Y - X %*% chol2inv(chol(t(X) %*% W %*% X)) %*% (t(X) %*% W %*% Y)
+  # Calculate the determinant of the matrix of R*si_theta*R^T
+  log_V_sum <- 2*sum(log(diag(chol(V))))
+  # Calculate the value of likelihood 
+  neg_lik <- 0.5*(t(y_centered) %*% W %*% y_centered+log_det_V+(n-p)*log(sigma_sq))
+  #Estimate the vector of beta and assign it to the property of likelihood
+  beta_hat <- chol2inv(chol(t(X)%*%W%*%X))%*%(t(X)%*%W%*%Y)
+  attr(neg_lik,"beta")<-beta_hat
+  }
+  return(neg_lik)
+}
